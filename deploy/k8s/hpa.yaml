@@ -1,0 +1,52 @@
+# Scaling an LLM-serving pod on CPU or memory utilization is close to
+# useless: a continuous-batching server can sit at high GPU utilization
+# while still having queueing headroom, and low CPU utilization while GPU
+# is saturated. So this HPA scales on a custom metric -- in-flight request
+# queue depth -- exposed by the serving process and scraped by
+# prometheus-adapter into the custom.metrics.k8s.io API that HPA reads from.
+#
+# Setup this assumes (documented, not templated here, since it's
+# cluster-specific): a Prometheus instance scraping /metrics from each pod,
+# and prometheus-adapter configured with a rule mapping the
+# `llm_serving_queue_depth` gauge to this metric name.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: llm-serving
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: llm-serving
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Pods
+      pods:
+        metric:
+          name: llm_serving_queue_depth
+        target:
+          type: AverageValue
+          # Target: no more than 4 requests queued per pod on average. Below
+          # this, added capacity would sit mostly idle; above it, per-request
+          # queueing latency starts to dominate end-to-end latency.
+          averageValue: "4"
+  behavior:
+    scaleUp:
+      # Scale up fast (0s stabilization) -- under-provisioning during a
+      # traffic spike directly costs users latency SLO breaches.
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 30
+    scaleDown:
+      # Scale down slowly (10 minutes) -- a new pod costs tens of seconds of
+      # model-load time before it's useful, so flapping down and immediately
+      # back up on a noisy traffic dip is strictly worse than staying warm a
+      # bit longer than "necessary."
+      stabilizationWindowSeconds: 600
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120

@@ -1,0 +1,3 @@
+# Production GPU serving path (serving/server_vllm.py). Not installed in CI
+# or required for the CPU baseline/tests -- install this on a CUDA machine.
+vllm>=0.6
