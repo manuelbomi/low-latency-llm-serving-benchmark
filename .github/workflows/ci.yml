@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt ruff
+
+      - name: Lint
+        run: ruff check serving/ bench/ tests/
+
+      - name: Unit tests (server, quantization correctness, load-test math)
+        run: pytest tests/ -v
+
+      - name: Smoke load test against a live server
+        run: |
+          uvicorn serving.server:app --host 127.0.0.1 --port 8000 &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8000/healthz && break
+            sleep 1
+          done
+          python -m bench.load_test --base-url http://127.0.0.1:8000 --concurrency 1 2 --requests-per-level 2 --max-tokens 8

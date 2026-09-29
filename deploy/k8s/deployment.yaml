@@ -1,0 +1,79 @@
+# Production serving deployment. Assumes the "GPU serving path" image, i.e.
+# serving/server_vllm.py (or vllm's own openai-compatible entrypoint) baked
+# into the container -- NOT the CPU demo server, which has no place in a
+# real deployment (see docs/PRODUCTION.md's "what to actually deploy"
+# section for why).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-serving
+  labels:
+    app: llm-serving
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: llm-serving
+  # Rolling update with maxUnavailable: 0 means a deploy never drops total
+  # serving capacity -- important because each pod takes tens of seconds to
+  # load model weights, so losing a pod before its replacement is Ready
+  # would create a real capacity dip under load.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: llm-serving
+    spec:
+      containers:
+        - name: llm-serving
+          image: ghcr.io/example-org/llm-serving:latest
+          ports:
+            - containerPort: 8000
+          resources:
+            requests:
+              cpu: "4"
+              memory: 16Gi
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "8"
+              memory: 24Gi
+              nvidia.com/gpu: "1"
+          # Model load can take 30-90s depending on model size and whether
+          # weights are already warm in a node-local cache -- startupProbe
+          # exists specifically so that window doesn't get misread as a
+          # liveness failure and trigger a restart loop.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            periodSeconds: 15
+            failureThreshold: 3
+          env:
+            - name: SERVING_MODEL_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: llm-serving-config
+                  key: model_name
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llm-serving-config
+data:
+  model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"
